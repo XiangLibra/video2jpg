@@ -1,60 +1,160 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-TW">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Multi-Video Frame Extractor</title>
-    <script>
-        async function uploadVideos() {
-            const videoFiles = document.getElementById('videos').files;
-            const fps = document.getElementById('fps').value;
-            if (!videoFiles.length || !fps) {
-                alert("Please upload videos and select FPS!");
-                return;
-            }
-
-            const formData = new FormData();
-            for (let file of videoFiles) {
-                formData.append('videos', file);
-            }
-            formData.append('fps', fps);
-
-            try {
-                const response = await fetch('/upload', {
-                    method: 'POST',
-                    body: formData,
-                });
-
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    alert(`Error: ${errorText}`);
-                    return;
-                }
-
-                const blob = await response.blob();
-                const downloadLink = document.createElement('a');
-                downloadLink.href = URL.createObjectURL(blob);
-                downloadLink.download = "all_videos_frames.zip";
-                downloadLink.click();
-
-                alert("Frames extracted and download initiated!");
-            } catch (error) {
-                console.error("Error uploading videos:", error);
-                alert("An error occurred while processing your request.");
-            }
-        }
-    </script>
+  <meta charset="UTF-8">
+  <title>多影片影格擷取工具</title>
+  <style>
+    body { font-family: Arial, sans-serif; text-align: center; }
+    #progressContainer { margin: 20px auto; width: 50%; display: none; }
+    progress { width: 100%; }
+  </style>
 </head>
 <body>
-    <h1>Multi-Video Frame Extractor</h1>
-    <form onsubmit="event.preventDefault(); uploadVideos();">
-        <label for="videos">Upload Videos:</label>
-        <input type="file" id="videos" name="videos" accept="video/*" multiple required><br><br>
-        
-        <label for="fps">Frames per Second:</label>
-        <input type="number" id="fps" name="fps" min="1" required><br><br>
-        
-        <button type="submit">Extract Frames</button>
-    </form>
+<h1>多影片影格擷取工具</h1>
+
+<form onsubmit="event.preventDefault(); uploadVideos();">
+  <label for="videos">選擇影片：</label>
+  <input type="file" id="videos" name="videos" accept="video/*" multiple required><br><br>
+
+  <label for="frameOption">選擇擷取方式：</label>
+  <select id="frameOption" name="frameOption" onchange="toggleOptions()">
+      <!-- 改為第一個選項是「每 N 秒擷取 1 幀」 -->
+      <option value="interval">每 N 秒擷取 1 幀</option>
+      <option value="fps">每秒擷取 N 幀</option>
+  </select><br><br>
+
+  <!-- 預設先顯示 intervalOption，fpsOption 隱藏 -->
+  <div id="intervalOption">
+      <label for="interval">擷取間隔 (秒)：</label>
+      <input type="number" id="interval" name="interval" min="1" value="1">
+  </div>
+  <div id="fpsOption" style="display:none;">
+      <label for="fps">每秒擷取幀數：</label>
+      <input type="number" id="fps" name="fps" min="1" value="1">
+  </div>
+
+  <br>
+  <button type="submit" id="submitButton">開始擷取</button>
+</form>
+
+<!-- 進度條 + 數值 -->
+<div id="progressContainer">
+  <progress id="progressBar" value="0" max="100"></progress>
+  <div>
+    目前進度：<span id="progressText">0</span>%
+  </div>
+</div>
+
+<script>
+function toggleOptions() {
+  const selection = document.getElementById('frameOption').value;
+  if (selection === 'fps') {
+    document.getElementById('fpsOption').style.display = 'block';
+    document.getElementById('intervalOption').style.display = 'none';
+  } else {
+    document.getElementById('fpsOption').style.display = 'none';
+    document.getElementById('intervalOption').style.display = 'block';
+  }
+}
+
+async function uploadVideos() {
+  const videoFiles = document.getElementById('videos').files;
+  const frameOption = document.getElementById('frameOption').value;
+  let fps = null;
+  let interval = null;
+
+  if (!videoFiles.length) {
+    alert("請上傳影片！");
+    return;
+  }
+
+  // 根據下拉選擇讀取對應的值
+  if (frameOption === 'interval') {
+    interval = document.getElementById('interval').value;
+    if (!interval || interval <= 0) {
+      alert("請選擇有效的時間間隔！");
+      return;
+    }
+  } else {
+    fps = document.getElementById('fps').value;
+    if (!fps || fps <= 0) {
+      alert("請選擇有效的 FPS 值！");
+      return;
+    }
+  }
+
+  // 建構 FormData
+  const formData = new FormData();
+  for (let file of videoFiles) {
+    formData.append('videos', file);
+  }
+  if (interval) {
+    formData.append('interval', interval);
+  }
+  if (fps) {
+    formData.append('fps', fps);
+  }
+
+  // 顯示進度 UI
+  const button = document.getElementById('submitButton');
+  button.disabled = true;
+  button.innerText = "處理中...";
+  document.getElementById('progressContainer').style.display = 'block';
+  const progressBar = document.getElementById('progressBar');
+  const progressText = document.getElementById('progressText');
+
+  // 發送到後端，先拿到 job_id
+  let resp = await fetch('/upload', {
+    method: 'POST',
+    body: formData
+  });
+  if (!resp.ok) {
+    let errorMsg = await resp.text();
+    alert("上傳失敗：" + errorMsg);
+    button.disabled = false;
+    button.innerText = "開始擷取";
+    return;
+  }
+  let data = await resp.json();
+  const jobId = data.job_id;
+  console.log("job_id:", jobId);
+
+  // 用 setInterval 輪詢 /progress/<job_id>
+  let timer = setInterval(async () => {
+    let progResp = await fetch('/progress/' + jobId);
+    if (!progResp.ok) {
+      console.log("輪詢失敗");
+      clearInterval(timer);
+      button.disabled = false;
+      button.innerText = "開始擷取";
+      return;
+    }
+    let progData = await progResp.json();
+    let p = progData.progress;
+    progressBar.value = p;
+    progressText.innerText = p;
+
+    if (progData.status === 'done') {
+      // 完成 -> 下載檔案
+      clearInterval(timer);
+      progressBar.value = 100;
+      progressText.innerText = 100;
+
+      // 下載
+      window.location.href = '/download/' + jobId;
+      alert("擷取完成，下載開始！");
+
+      button.disabled = false;
+      button.innerText = "開始擷取";
+    } else if (progData.status === 'error') {
+      clearInterval(timer);
+      alert("處理失敗：" + progData.error);
+      button.disabled = false;
+      button.innerText = "開始擷取";
+    }
+  }, 1000);
+}
+</script>
+
 </body>
 </html>
